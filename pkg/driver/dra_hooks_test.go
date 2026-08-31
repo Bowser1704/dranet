@@ -23,6 +23,7 @@ import (
 	"hash/fnv"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -1375,6 +1376,7 @@ func TestAddSourceBasedRoutingRule(t *testing.T) {
 			name: "IPv6 default route in main table, source-based routing should be added",
 			deviceCfg: DeviceConfig{
 				NetworkInterfaceConfigInPod: apis.NetworkConfig{
+					AutoRouteTable: ptr.To(true),
 					Interface: apis.InterfaceConfig{
 						Name:      ifName,
 						Type:      apis.InterfaceTypeIPVLAN,
@@ -1484,5 +1486,57 @@ func TestAddSourceBasedRoutingRule(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAddSourceBasedRoutingWithConfiguredRoutes(t *testing.T) {
+	const ifName = "ipvlan0"
+	h := fnv.New32a()
+	h.Write([]byte(ifName))
+	wantTable := int((h.Sum32() % 1000) + apis.RouteTableOffset)
+	originalRoutes := []apis.RouteConfig{
+		{Destination: "fe80::1/128", Scope: 253},
+		{Destination: "2408:4000::/46", Gateway: "fe80::1"},
+		{Destination: "192.0.2.0/24", Table: 2001},
+	}
+	deviceCfg := DeviceConfig{
+		NetworkInterfaceConfigInPod: apis.NetworkConfig{
+			AutoRouteTable: ptr.To(true),
+			Interface: apis.InterfaceConfig{
+				Name:      ifName,
+				Type:      apis.InterfaceTypeIPVLAN,
+				Addresses: []string{"2001:db8::3/128", "192.0.2.3/32"},
+			},
+			Routes: slices.Clone(originalRoutes),
+		},
+	}
+
+	addSourceBasedRouting(&deviceCfg, nil)
+
+	wantRoutes := []apis.RouteConfig{
+		{Destination: "fe80::1/128", Scope: 253, Table: wantTable},
+		{Destination: "2408:4000::/46", Gateway: "fe80::1", Table: wantTable},
+		{Destination: "192.0.2.0/24", Table: 2001},
+	}
+	wantRules := []apis.RuleConfig{
+		{Source: "2001:db8::3/128", Table: wantTable, Priority: 32000},
+	}
+
+	if diff := cmp.Diff(wantRoutes, deviceCfg.NetworkInterfaceConfigInPod.Routes); diff != "" {
+		t.Errorf("routes mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(wantRules, deviceCfg.NetworkInterfaceConfigInPod.Rules); diff != "" {
+		t.Errorf("rules mismatch (-want +got):\n%s", diff)
+	}
+
+	deviceCfg.NetworkInterfaceConfigInPod.Routes = slices.Clone(originalRoutes)
+	deviceCfg.NetworkInterfaceConfigInPod.Rules = nil
+	deviceCfg.NetworkInterfaceConfigInPod.AutoRouteTable = ptr.To(false)
+	addSourceBasedRouting(&deviceCfg, nil)
+	if diff := cmp.Diff(originalRoutes, deviceCfg.NetworkInterfaceConfigInPod.Routes); diff != "" {
+		t.Errorf("disabled routes mismatch (-want +got):\n%s", diff)
+	}
+	if len(deviceCfg.NetworkInterfaceConfigInPod.Rules) != 0 {
+		t.Errorf("expected no automatic rules, got %+v", deviceCfg.NetworkInterfaceConfigInPod.Rules)
 	}
 }

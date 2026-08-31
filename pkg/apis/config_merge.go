@@ -44,6 +44,9 @@ func MergeNetworkConfig(user, cloud *NetworkConfig) *NetworkConfig {
 	if err := mergo.Merge(merged, user, mergo.WithOverride, mergo.WithAppendSlice); err != nil {
 		return &NetworkConfig{}
 	}
+	if user.AutoRouteTable != nil {
+		merged.AutoRouteTable = user.AutoRouteTable
+	}
 
 	// Deduplicate slices where order or uniqueness matters.
 	// For addresses, we just unique them.

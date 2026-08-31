@@ -30,6 +30,9 @@ type NetworkConfig struct {
 
 	// Routes defines static routes to be configured for this interface.
 	Routes []RouteConfig `json:"routes,omitempty"`
+	// AutoRouteTable lets DraNet assign a table and source rules to routes with table 0.
+	// When unset or false, table 0 routes use the main table.
+	AutoRouteTable *bool `json:"autoRouteTable,omitempty"`
 
 	// Rules defines routing rules to be configured for this interface.
 	// Rules are not supported when VRF (Interface.VRF) is enabled.

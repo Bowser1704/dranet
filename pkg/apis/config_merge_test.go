@@ -43,12 +43,14 @@ func TestMergeNetworkConfig(t *testing.T) {
 		{
 			name: "scalar overrides",
 			user: &NetworkConfig{
+				AutoRouteTable: ptr.To(false),
 				Interface: InterfaceConfig{
 					Name: "eth0-user",
 					MTU:  ptr.To[int32](1400),
 				},
 			},
 			cloud: &NetworkConfig{
+				AutoRouteTable: ptr.To(true),
 				Interface: InterfaceConfig{
 					Name: "eth0-cloud",
 					MTU:  ptr.To[int32](1500),
@@ -56,6 +58,7 @@ func TestMergeNetworkConfig(t *testing.T) {
 				},
 			},
 			want: &NetworkConfig{
+				AutoRouteTable: ptr.To(false),
 				Interface: InterfaceConfig{
 					Name: "eth0-user",
 					MTU:  ptr.To[int32](1400),

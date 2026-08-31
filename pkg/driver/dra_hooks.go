@@ -49,6 +49,8 @@ import (
 
 const (
 	rdmaCmPath = "/dev/infiniband/rdma_cm"
+	// sourceBasedRoutingRulePriority precedes Linux's main-table rule at 32766.
+	sourceBasedRoutingRulePriority = 32000
 )
 
 // DRA hooks exposes Network Devices to Kubernetes, the Network devices and its attributes are
@@ -449,11 +451,13 @@ func (np *NetworkDriver) prepareResourceClaim(ctx context.Context, claim *resour
 		if deviceCfg.NetworkInterfaceConfigInPod.Interface.IsSubinterface() {
 			iface := &deviceCfg.NetworkInterfaceConfigInPod.Interface
 			switch {
-			case len(deviceCfg.NetworkInterfaceConfigInPod.Routes) > 0 || len(deviceCfg.NetworkInterfaceConfigInPod.Rules) > 0:
-				// User-provided routes/rules exist; skip automatic source-based routing.
+			case len(deviceCfg.NetworkInterfaceConfigInPod.Rules) > 0:
+				// Explicit rules take ownership of policy routing.
+			case len(iface.Addresses) > 0 && len(deviceCfg.NetworkInterfaceConfigInPod.Routes) > 0:
+				if enabled := deviceCfg.NetworkInterfaceConfigInPod.AutoRouteTable; enabled != nil && *enabled {
+					addSourceBasedRouting(&deviceCfg, nil)
+				}
 			case len(iface.Addresses) > 0:
-				// Derive the gateway from the parent's routes to build source-based
-				// routing, without copying those routes/rules into the pod config.
 				parentRoutes, _, err := getRouteInfo(nlHandle, ifName, link)
 				if err != nil {
 					errorList = append(errorList, err)
@@ -792,6 +796,33 @@ func addSourceBasedRouting(deviceCfg *DeviceConfig, parentRoutes []apis.RouteCon
 	h := fnv.New32a()
 	h.Write([]byte(deviceCfg.NetworkInterfaceConfigInPod.Interface.Name))
 	tableID := int((h.Sum32() % 1000) + apis.RouteTableOffset)
+	if enabled := deviceCfg.NetworkInterfaceConfigInPod.AutoRouteTable; enabled != nil && *enabled && len(deviceCfg.NetworkInterfaceConfigInPod.Routes) > 0 {
+		families := sets.New[int]()
+		for i := range deviceCfg.NetworkInterfaceConfigInPod.Routes {
+			route := &deviceCfg.NetworkInterfaceConfigInPod.Routes[i]
+			if route.Table != 0 {
+				continue
+			}
+			prefix, err := netip.ParsePrefix(route.Destination)
+			if err != nil {
+				continue
+			}
+			route.Table = tableID
+			families.Insert(prefix.Addr().BitLen())
+		}
+		for _, address := range deviceCfg.NetworkInterfaceConfigInPod.Interface.Addresses {
+			prefix, err := netip.ParsePrefix(address)
+			if err != nil || !families.Has(prefix.Addr().BitLen()) {
+				continue
+			}
+			deviceCfg.NetworkInterfaceConfigInPod.Rules = append(deviceCfg.NetworkInterfaceConfigInPod.Rules, apis.RuleConfig{
+				Source:   address,
+				Table:    tableID,
+				Priority: sourceBasedRoutingRulePriority,
+			})
+		}
+		return
+	}
 
 	// Find the gateway for each IP family from the parent routes.
 	// gateways stores the gateway IP addresses, keyed by "ipv4" and "ipv6".
@@ -855,7 +886,7 @@ func addSourceBasedRouting(deviceCfg *DeviceConfig, parentRoutes []apis.RouteCon
 		deviceCfg.NetworkInterfaceConfigInPod.Rules = append(deviceCfg.NetworkInterfaceConfigInPod.Rules, apis.RuleConfig{
 			Source:   ipStr,
 			Table:    tableID,
-			Priority: 32000,
+			Priority: sourceBasedRoutingRulePriority,
 		})
 	}
 }
